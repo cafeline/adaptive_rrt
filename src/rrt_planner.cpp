@@ -230,8 +230,15 @@ std::optional<Path> RRTPathPlanner::run_rrt(const Position& start_pos,
     for (int iteration = 0; iteration < config_.max_iterations; ++iteration) {
         Position rand_pos;
         
+        // 進捗に応じてゴールバイアスを動的に調整（開けた環境での効率向上）
+        double adaptive_goal_bias = config_.goal_bias;
+        if (iteration > config_.max_iterations / 2) {
+            // 後半はゴールバイアスを強化
+            adaptive_goal_bias = std::min(0.7, config_.goal_bias * 2.0);
+        }
+        
         // ゴールバイアス
-        if (uniform_dist_(random_generator_) < config_.goal_bias) {
+        if (uniform_dist_(random_generator_) < adaptive_goal_bias) {
             rand_pos = goal_pos;
         } else {
             rand_pos = generate_random_position();
@@ -284,6 +291,23 @@ std::optional<Path> RRTPathPlanner::run_rrt(const Position& start_pos,
             goal_node = new_node;
             statistics_.goal_found_iteration = iteration;
             break;
+        }
+        
+        // 開けた環境での早期ゴール接続試行（パフォーマンス向上）
+        if (iteration % 50 == 0 && iteration > 100) {
+            // 定期的にゴールへの直接接続を試行
+            if (is_valid_line(new_pos, goal_pos, inflated_grid) && 
+                new_pos.distance_to(goal_pos) <= config_.step_size * 3) {
+                auto goal_connection = std::make_shared<RRTNode>(
+                    goal_pos, new_node, 
+                    new_node->cost + new_pos.distance_to(goal_pos), 
+                    tree_.size()
+                );
+                tree_.push_back(goal_connection);
+                goal_node = goal_connection;
+                statistics_.goal_found_iteration = iteration;
+                break;
+            }
         }
     }
     
