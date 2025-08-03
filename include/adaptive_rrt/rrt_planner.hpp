@@ -116,6 +116,72 @@ public:
      */
     void update_config(const RRTConfig& new_config);
 
+    // 動的障害物対応機能
+    
+    /**
+     * @brief 障害物と衝突するエッジを特定
+     * @param dynamic_obstacles 動的障害物リスト
+     * @return 衝突エッジのリスト
+     */
+    std::vector<CollisionEdge> identify_collision_edges(
+        const std::vector<std::pair<Position, double>>& dynamic_obstacles);
+
+    /**
+     * @brief 衝突エッジとその子ノードを無効化
+     * @param dynamic_obstacles 動的障害物リスト
+     * @return 無効化されたノードのリスト
+     */
+    std::vector<std::shared_ptr<RRTNode>> invalidate_collision_edges_and_children(
+        const std::vector<std::pair<Position, double>>& dynamic_obstacles);
+
+    /**
+     * @brief 孤立したサブツリーを根ノードに再接続
+     * @return 再接続されたサブツリーの数
+     */
+    int reconnect_isolated_subtrees();
+
+    /**
+     * @brief 新しいサンプリングによる補完
+     * @return サンプリング補完結果
+     */
+    SamplingComplementResult complement_with_new_sampling();
+
+    /**
+     * @brief 動的障害物対応の統合処理
+     * @param dynamic_obstacles 動的障害物リスト
+     * @return 処理結果
+     */
+    DynamicObstacleHandlingResult handle_dynamic_obstacles(
+        const std::vector<std::pair<Position, double>>& dynamic_obstacles);
+
+    /**
+     * @brief ツリーのスナップショットを取得（テスト用）
+     * @return 現在のツリー状態
+     */
+    std::vector<std::shared_ptr<RRTNode>> get_tree_snapshot() const;
+
+    /**
+     * @brief ツリーの整合性を検証（テスト用）
+     * @return 整合性が保たれているか
+     */
+    bool verify_tree_consistency() const;
+
+    /**
+     * @brief 経路が障害物と衝突していないか検証（テスト用）
+     * @param path 検証する経路
+     * @param obstacles 障害物リスト
+     * @return 衝突がないか
+     */
+    bool verify_path_collision_free(const Path& path,
+        const std::vector<std::pair<Position, double>>& obstacles) const;
+
+    /**
+     * @brief 経路の滑らかさを検証（テスト用）
+     * @param path 検証する経路
+     * @return 滑らかさが許容範囲内か
+     */
+    bool verify_path_smoothness(const Path& path) const;
+
 private:
     // グリッドデータ
     int width_;
@@ -252,7 +318,47 @@ private:
      * @param index 対象点のインデックス
      * @return 曲率
      */
-    double calculate_curvature(const Path& path, size_t index);
+    double calculate_curvature(const Path& path, size_t index) const;
+
+    // 動的障害物対応のプライベート関数
+    
+    /**
+     * @brief エッジが障害物と衝突するかチェック
+     * @param parent 親ノード
+     * @param child 子ノード  
+     * @param obstacle 障害物（位置と半径）
+     * @return 衝突情報（衝突する場合）
+     */
+    std::optional<CollisionEdge> check_edge_collision(
+        std::shared_ptr<RRTNode> parent,
+        std::shared_ptr<RRTNode> child,
+        const std::pair<Position, double>& obstacle);
+
+    /**
+     * @brief ノードとその子ノードを再帰的に無効化
+     * @param node 無効化するノード
+     * @param invalidated_nodes 無効化されたノードのリスト
+     */
+    void invalidate_node_recursively(std::shared_ptr<RRTNode> node,
+                                     std::vector<std::shared_ptr<RRTNode>>& invalidated_nodes);
+
+    /**
+     * @brief 孤立したサブツリーを特定
+     * @return 孤立サブツリーのルートノードリスト
+     */
+    std::vector<std::shared_ptr<RRTNode>> find_isolated_subtrees();
+
+    /**
+     * @brief サブツリーの再接続を試行
+     * @param subtree_root サブツリーのルートノード
+     * @return 再接続に成功したか
+     */
+    bool attempt_subtree_reconnection(std::shared_ptr<RRTNode> subtree_root);
+
+    /**
+     * @brief ツリー構造を更新（親子関係の維持）
+     */
+    void update_tree_structure();
 };
 
 } // namespace adaptive_rrt

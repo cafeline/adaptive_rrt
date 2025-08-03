@@ -6,6 +6,7 @@
 #include <cmath>
 #include <memory>
 #include <random>
+#include <algorithm>
 
 namespace adaptive_rrt {
 
@@ -47,14 +48,27 @@ struct Position {
 struct RRTNode {
     Position position;
     std::shared_ptr<RRTNode> parent;
+    std::vector<std::shared_ptr<RRTNode>> children;
     double cost;
     int id;
+    bool is_valid;
     
-    RRTNode() : cost(0.0), id(0) {}
+    RRTNode() : cost(0.0), id(0), is_valid(true) {}
     
     RRTNode(const Position& pos, std::shared_ptr<RRTNode> p = nullptr, 
             double c = 0.0, int node_id = 0)
-        : position(pos), parent(p), cost(c), id(node_id) {}
+        : position(pos), parent(p), cost(c), id(node_id), is_valid(true) {}
+        
+    void add_child(std::shared_ptr<RRTNode> child) {
+        children.push_back(child);
+    }
+    
+    void remove_child(std::shared_ptr<RRTNode> child) {
+        auto it = std::find(children.begin(), children.end(), child);
+        if (it != children.end()) {
+            children.erase(it);
+        }
+    }
 };
 
 /**
@@ -185,6 +199,55 @@ struct RRTStatistics {
         , goal_found_iteration(-1)
         , path_length(0.0)
         , computation_time_ms(0.0) {}
+};
+
+/**
+ * @brief 衝突エッジ情報
+ */
+struct CollisionEdge {
+    std::shared_ptr<RRTNode> parent_node;
+    std::shared_ptr<RRTNode> child_node;
+    Position collision_point;
+    double collision_distance;
+    
+    CollisionEdge(std::shared_ptr<RRTNode> parent, std::shared_ptr<RRTNode> child,
+                  const Position& point, double distance)
+        : parent_node(parent), child_node(child), collision_point(point), collision_distance(distance) {}
+};
+
+/**
+ * @brief 動的障害物対応結果
+ */
+struct DynamicObstacleHandlingResult {
+    bool success;
+    int collision_edges_identified;
+    int nodes_invalidated;
+    int subtrees_reconnected;
+    int new_nodes_sampled;
+    std::optional<Path> final_path;
+    
+    DynamicObstacleHandlingResult()
+        : success(false)
+        , collision_edges_identified(0)
+        , nodes_invalidated(0)
+        , subtrees_reconnected(0)
+        , new_nodes_sampled(0) {}
+};
+
+/**
+ * @brief サンプリング補完結果
+ */
+struct SamplingComplementResult {
+    int new_nodes_count;
+    double sampling_efficiency;
+    bool path_to_goal_found;
+    std::vector<std::shared_ptr<RRTNode>> new_nodes;
+    std::optional<Path> final_path;
+    
+    SamplingComplementResult()
+        : new_nodes_count(0)
+        , sampling_efficiency(0.0)
+        , path_to_goal_found(false) {}
 };
 
 } // namespace adaptive_rrt

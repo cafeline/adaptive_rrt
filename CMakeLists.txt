@@ -60,6 +60,23 @@ install(TARGETS adaptive_rrt rrt_planner
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
+  find_package(ament_cmake_gtest REQUIRED)
+  
+  # 動的障害物対応機能のテスト
+  ament_add_gtest(test_dynamic_obstacle_handling
+    test/test_dynamic_obstacle_handling.cpp
+  )
+  target_include_directories(test_dynamic_obstacle_handling PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+  )
+  target_link_libraries(test_dynamic_obstacle_handling rrt_planner)
+  ament_target_dependencies(test_dynamic_obstacle_handling
+    rclcpp
+    nav_msgs
+    geometry_msgs
+  )
+  
   # the following line skips the linter which checks for copyrights
   # comment the line when a copyright and license is added to all source files
   set(ament_cmake_copyright_FOUND TRUE)

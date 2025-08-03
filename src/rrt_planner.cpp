@@ -3,6 +3,7 @@
 #include <chrono>
 #include <algorithm>
 #include <queue>
+#include <limits>
 
 namespace adaptive_rrt {
 
@@ -580,7 +581,7 @@ Path RRTPathPlanner::curvature_based_smoothing(const Path& path,
     return smoothed_path;
 }
 
-double RRTPathPlanner::calculate_curvature(const Path& path, size_t index) {
+double RRTPathPlanner::calculate_curvature(const Path& path, size_t index) const {
     if (index == 0 || index >= path.points.size() - 1 || path.points.size() < 3) {
         return 0.0;
     }
@@ -615,6 +616,368 @@ double RRTPathPlanner::calculate_curvature(const Path& path, size_t index) {
     // 曲率を計算（角度変化 / 平均セグメント長）
     double avg_length = (len1 + len2) / 2.0;
     return cross_product / avg_length;
+}
+
+// 動的障害物対応機能の実装
+
+std::vector<CollisionEdge> RRTPathPlanner::identify_collision_edges(
+    const std::vector<std::pair<Position, double>>& dynamic_obstacles) {
+    
+    std::vector<CollisionEdge> collision_edges;
+    
+    // 全てのツリーエッジをチェック
+    for (const auto& node : tree_) {
+        if (!node || !node->parent || !node->is_valid) {
+            continue;
+        }
+        
+        // 各障害物との衝突をチェック
+        for (const auto& obstacle : dynamic_obstacles) {
+            auto collision = check_edge_collision(node->parent, node, obstacle);
+            if (collision.has_value()) {
+                collision_edges.push_back(collision.value());
+            }
+        }
+    }
+    
+    return collision_edges;
+}
+
+std::vector<std::shared_ptr<RRTNode>> RRTPathPlanner::invalidate_collision_edges_and_children(
+    const std::vector<std::pair<Position, double>>& dynamic_obstacles) {
+    
+    std::vector<std::shared_ptr<RRTNode>> invalidated_nodes;
+    
+    // 衝突エッジを特定
+    auto collision_edges = identify_collision_edges(dynamic_obstacles);
+    
+    // 衝突エッジの子ノードから再帰的に無効化
+    for (const auto& collision_edge : collision_edges) {
+        if (collision_edge.child_node && collision_edge.child_node->is_valid) {
+            invalidate_node_recursively(collision_edge.child_node, invalidated_nodes);
+        }
+    }
+    
+    return invalidated_nodes;
+}
+
+int RRTPathPlanner::reconnect_isolated_subtrees() {
+    int reconnected_count = 0;
+    
+    // 孤立したサブツリーを特定
+    auto isolated_subtrees = find_isolated_subtrees();
+    
+    // 各孤立サブツリーの再接続を試行
+    for (auto& subtree_root : isolated_subtrees) {
+        if (attempt_subtree_reconnection(subtree_root)) {
+            reconnected_count++;
+        }
+    }
+    
+    // ツリー構造を更新
+    update_tree_structure();
+    
+    return reconnected_count;
+}
+
+SamplingComplementResult RRTPathPlanner::complement_with_new_sampling() {
+    SamplingComplementResult result;
+    
+    // 現在のツリーサイズを記録
+    size_t initial_tree_size = tree_.size();
+    
+    // 新しいサンプリングを実行（最大100回試行）
+    int max_sampling_attempts = 100;
+    int successful_samples = 0;
+    
+    for (int i = 0; i < max_sampling_attempts; ++i) {
+        // ランダムな位置をサンプリング
+        Position random_pos = generate_random_position();
+        
+        // 有効な位置かチェック
+        if (!is_valid_position(random_pos)) {
+            continue;
+        }
+        
+        // 最も近い有効なノードを探す
+        std::shared_ptr<RRTNode> nearest_node = nullptr;
+        double min_distance = std::numeric_limits<double>::max();
+        
+        for (const auto& node : tree_) {
+            if (!node || !node->is_valid) {
+                continue;
+            }
+            
+            double distance = node->position.distance_to(random_pos);
+            if (distance < min_distance) {
+                min_distance = distance;
+                nearest_node = node;
+            }
+        }
+        
+        if (!nearest_node) {
+            continue;
+        }
+        
+        // ステア操作で新しい位置を計算
+        Position new_pos = steer(nearest_node->position, random_pos);
+        
+        // 接続可能かチェック
+        if (is_valid_line(nearest_node->position, new_pos)) {
+            // 新しいノードを作成
+            auto new_node = std::make_shared<RRTNode>(
+                new_pos, nearest_node, 
+                nearest_node->cost + nearest_node->position.distance_to(new_pos),
+                static_cast<int>(tree_.size())
+            );
+            
+            tree_.push_back(new_node);
+            nearest_node->add_child(new_node);
+            result.new_nodes.push_back(new_node);
+            successful_samples++;
+        }
+    }
+    
+    result.new_nodes_count = successful_samples;
+    result.sampling_efficiency = static_cast<double>(successful_samples) / max_sampling_attempts;
+    
+    // ゴールへの接続をチェック
+    // 簡易実装: 最後に追加されたノードからゴールまでの距離をチェック
+    if (!result.new_nodes.empty()) {
+        // ここではダミーの実装
+        result.path_to_goal_found = false;
+    }
+    
+    return result;
+}
+
+DynamicObstacleHandlingResult RRTPathPlanner::handle_dynamic_obstacles(
+    const std::vector<std::pair<Position, double>>& dynamic_obstacles) {
+    
+    DynamicObstacleHandlingResult result;
+    
+    try {
+        // 1. 衝突エッジの特定
+        auto collision_edges = identify_collision_edges(dynamic_obstacles);
+        result.collision_edges_identified = static_cast<int>(collision_edges.size());
+        
+        // 2. 衝突エッジとその子ノードの無効化
+        auto invalidated_nodes = invalidate_collision_edges_and_children(dynamic_obstacles);
+        result.nodes_invalidated = static_cast<int>(invalidated_nodes.size());
+        
+        // 3. 孤立サブツリーの再接続
+        result.subtrees_reconnected = reconnect_isolated_subtrees();
+        
+        // 4. 新しいサンプリングによる補完
+        auto sampling_result = complement_with_new_sampling();
+        result.new_nodes_sampled = sampling_result.new_nodes_count;
+        
+        // 処理成功
+        result.success = true;
+        
+    } catch (const std::exception& e) {
+        result.success = false;
+    }
+    
+    return result;
+}
+
+// テスト用関数の実装
+
+std::vector<std::shared_ptr<RRTNode>> RRTPathPlanner::get_tree_snapshot() const {
+    std::vector<std::shared_ptr<RRTNode>> valid_nodes;
+    for (const auto& node : tree_) {
+        if (node && node->is_valid) {
+            valid_nodes.push_back(node);
+        }
+    }
+    return valid_nodes;
+}
+
+bool RRTPathPlanner::verify_tree_consistency() const {
+    for (const auto& node : tree_) {
+        if (!node || !node->is_valid) {
+            continue;
+        }
+        
+        // 親子関係の整合性をチェック
+        if (node->parent) {
+            bool found_in_parent_children = false;
+            for (const auto& child : node->parent->children) {
+                if (child == node) {
+                    found_in_parent_children = true;
+                    break;
+                }
+            }
+            if (!found_in_parent_children) {
+                return false;
+            }
+        }
+        
+        // 子ノードの親関係をチェック
+        for (const auto& child : node->children) {
+            if (child && child->parent != node) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool RRTPathPlanner::verify_path_collision_free(const Path& path,
+    const std::vector<std::pair<Position, double>>& obstacles) const {
+    
+    for (size_t i = 1; i < path.points.size(); ++i) {
+        const Position& start = path.points[i-1].position;
+        const Position& end = path.points[i].position;
+        
+        // 各障害物との衝突をチェック
+        for (const auto& obstacle : obstacles) {
+            CircularObstacle circular_obstacle(obstacle.first, obstacle.second);
+            if (circular_obstacle.intersects_line(start, end)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+bool RRTPathPlanner::verify_path_smoothness(const Path& path) const {
+    if (path.points.size() < 3) {
+        return true;
+    }
+    
+    // 曲率の平均と分散を計算
+    double total_curvature = 0.0;
+    int curvature_count = 0;
+    
+    for (size_t i = 1; i < path.points.size() - 1; ++i) {
+        double curvature = calculate_curvature(path, i);
+        total_curvature += curvature;
+        curvature_count++;
+    }
+    
+    if (curvature_count == 0) {
+        return true;
+    }
+    
+    double avg_curvature = total_curvature / curvature_count;
+    return avg_curvature < config_.curvature_threshold;
+}
+
+// プライベート関数の実装
+
+std::optional<CollisionEdge> RRTPathPlanner::check_edge_collision(
+    std::shared_ptr<RRTNode> parent,
+    std::shared_ptr<RRTNode> child,
+    const std::pair<Position, double>& obstacle) {
+    
+    if (!parent || !child) {
+        return std::nullopt;
+    }
+    
+    CircularObstacle circular_obstacle(obstacle.first, obstacle.second);
+    
+    if (circular_obstacle.intersects_line(parent->position, child->position)) {
+        // 衝突点を計算（簡易実装：線分の中点）
+        Position collision_point(
+            (parent->position.x + child->position.x) / 2.0,
+            (parent->position.y + child->position.y) / 2.0
+        );
+        
+        double collision_distance = obstacle.first.distance_to(collision_point);
+        
+        return CollisionEdge(parent, child, collision_point, collision_distance);
+    }
+    
+    return std::nullopt;
+}
+
+void RRTPathPlanner::invalidate_node_recursively(std::shared_ptr<RRTNode> node,
+                                                 std::vector<std::shared_ptr<RRTNode>>& invalidated_nodes) {
+    
+    if (!node || !node->is_valid) {
+        return;
+    }
+    
+    // ノードを無効化
+    node->is_valid = false;
+    invalidated_nodes.push_back(node);
+    
+    // 子ノードを再帰的に無効化
+    for (auto& child : node->children) {
+        invalidate_node_recursively(child, invalidated_nodes);
+    }
+}
+
+std::vector<std::shared_ptr<RRTNode>> RRTPathPlanner::find_isolated_subtrees() {
+    std::vector<std::shared_ptr<RRTNode>> isolated_roots;
+    
+    for (const auto& node : tree_) {
+        if (!node || !node->is_valid) {
+            continue;
+        }
+        
+        // 親が無効化されているが自分は有効な場合、孤立サブツリーのルート
+        if (node->parent && !node->parent->is_valid) {
+            isolated_roots.push_back(node);
+        }
+    }
+    
+    return isolated_roots;
+}
+
+bool RRTPathPlanner::attempt_subtree_reconnection(std::shared_ptr<RRTNode> subtree_root) {
+    if (!subtree_root || !subtree_root->is_valid) {
+        return false;
+    }
+    
+    // 最も近い有効なノードを探す
+    std::shared_ptr<RRTNode> best_connection = nullptr;
+    double min_distance = std::numeric_limits<double>::max();
+    
+    for (const auto& node : tree_) {
+        if (!node || !node->is_valid || node == subtree_root) {
+            continue;
+        }
+        
+        double distance = node->position.distance_to(subtree_root->position);
+        
+        // 接続可能な距離内で最も近いノードを選択
+        if (distance < min_distance && distance <= config_.rewire_radius) {
+            if (is_valid_line(node->position, subtree_root->position)) {
+                min_distance = distance;
+                best_connection = node;
+            }
+        }
+    }
+    
+    if (best_connection) {
+        // 再接続を実行
+        subtree_root->parent = best_connection;
+        subtree_root->cost = best_connection->cost + 
+                            best_connection->position.distance_to(subtree_root->position);
+        best_connection->add_child(subtree_root);
+        return true;
+    }
+    
+    return false;
+}
+
+void RRTPathPlanner::update_tree_structure() {
+    // 全ノードの子リストをクリア
+    for (auto& node : tree_) {
+        if (node) {
+            node->children.clear();
+        }
+    }
+    
+    // 親子関係を再構築
+    for (const auto& node : tree_) {
+        if (node && node->is_valid && node->parent && node->parent->is_valid) {
+            node->parent->add_child(node);
+        }
+    }
 }
 
 } // namespace adaptive_rrt
